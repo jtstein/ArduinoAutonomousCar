@@ -1,0 +1,430 @@
+#include <Wire.h>
+#include <TimedAction.h> //Allows for actions to be done on timing intervals "multithreading"
+#include "Adafruit_VL6180X.h"
+
+// motor pins
+#define pinI1     8  //define IN1 interface
+#define pinI2     11 //define IN2 interface
+#define speedpinA 9  //enable motor A
+#define pinI3     12 //define IN3 interface
+#define pinI4     13 //define IN4 interface
+#define speedpinB 10 //enable motor B
+int speadL  = 250; //define the spead of left motor  
+int speadR  = 250; //define the spaed of the right motor
+int stopDelay = 100;
+
+
+// defines pins numbers
+const int trigPin = 5;
+const int echoPin = 4;
+
+byte laser1SHDNPin = 2;  //GPIO0_0 for laser 1
+byte laser2SHDNPin = 3;  //GPIO0_1 for laser 2
+
+long duration = 0;
+int distance = 0;
+uint8_t range = 0;
+int numIntersections = 0;
+
+uint8_t lRange = 0;
+uint8_t rRange = 0;
+
+//Using Enum for faster logic
+enum strafe{
+  corRight,
+  corLeft,
+  stable,
+  turnRight,
+  turnLeft,
+  rCrit,
+  lCrit
+};
+
+enum front{
+  wallFar,
+  wallCloser,
+  wallWarn,
+  wallCritical
+};
+
+
+strafe lsrs = stable;
+front fUltra = wallFar;
+bool isStart = true;
+
+
+TimedAction sideLaserThread = TimedAction(stopDelay, readLasers);
+TimedAction frontSensorThread = TimedAction(stopDelay, senseFront);
+Adafruit_VL6180X vl = Adafruit_VL6180X();
+Adafruit_VL6180X v2 = Adafruit_VL6180X();
+
+
+// Ultrasonic functions THESE NEED TO GO JUST SLOWING DOWN FOR NO REASON
+long microsecondsToInches(long microseconds){
+  return (microseconds / 74 / 2);
+}
+long microsecondsToCentimeters(long microseconds){
+  return (microseconds / 29 / 2);
+}
+
+// Motor functions
+void left(){
+  analogWrite(speedpinA,speadL);//input a simulation value to set the speed
+  analogWrite(speedpinB,speadR);
+  digitalWrite(pinI4,HIGH);//turn DC Motor B move clockwise
+  digitalWrite(pinI3,LOW);
+  digitalWrite(pinI2,LOW);//turn DC Motor A move anticlockwise
+  digitalWrite(pinI1,HIGH);
+}
+
+void right(){
+  analogWrite(speedpinA,speadL);//input a simulation value to set the speed
+  analogWrite(speedpinB,speadR);
+  digitalWrite(pinI4,LOW);//turn DC Motor B move anticlockwise
+  digitalWrite(pinI3,HIGH);
+  digitalWrite(pinI2,HIGH);//turn DC Motor A move clockwise
+  digitalWrite(pinI1,LOW);
+}
+
+void backward(){
+  analogWrite(speedpinA,speadL);//input a simulation value to set the speed
+  analogWrite(speedpinB,speadR);
+  digitalWrite(pinI4,HIGH);//turn DC Motor B move clockwise
+  digitalWrite(pinI3,LOW);
+  digitalWrite(pinI2,HIGH);//turn DC Motor A move clockwise
+  digitalWrite(pinI1,LOW);
+}
+
+void forward(){
+  analogWrite(speedpinA,speadL);//input a simulation value to set the speed
+  analogWrite(speedpinB,speadR);
+  digitalWrite(pinI2,LOW);//turn DC Motor A move clockwise
+  digitalWrite(pinI4,LOW);//turn DC Motor B move anticlockwise
+  digitalWrite(pinI1,HIGH);
+  digitalWrite(pinI3,HIGH);
+  delay(200);
+}
+void corner(char dir){
+  //analogWrite(speedpinA,speadL);//input a simulation value to set the speed
+  //analogWrite(speedpinB,speadR);
+  if(dir == 'l'){
+     analogWrite(speedpinB,LOW);
+     delay(200);   
+  }
+  if(dir == 'r'){
+    analogWrite(speedpinA,LOW);//input a simulation value to set the speed
+    delay(200);
+  }
+  digitalWrite(pinI4,LOW);//turn DC Motor B move anticlockwise
+  digitalWrite(pinI2,LOW);//turn DC Motor A move clockwise
+  digitalWrite(pinI3,HIGH);
+  digitalWrite(pinI1,HIGH);
+}
+
+void stop(){
+  digitalWrite(speedpinA,LOW);
+  //Unenble the pin, to stop the motor. This should be done to avid damaging the motor.
+  digitalWrite(speedpinB,LOW);
+  delay(stopDelay);
+}
+
+void turn(char dir){
+  
+  stop();
+  
+  int delayLen = 300;
+  
+  if (dir == 'l' || dir == 'L'){
+      left();
+      delay(900);
+      //senseFront();
+      //fUltra = wallCritical;
+      while (fUltra != wallFar){
+        left();
+        delay(300);
+        stop();
+        senseFront();
+      }
+      
+  }
+  
+  if (dir == 'r' || dir == 'R'){
+    right();
+    delay(900);
+    //senseFront();
+    //fUltra = wallCritical;
+    while(fUltra != wallFar){
+     right(); 
+     delay(300);
+     stop();
+     senseFront();
+    }
+  }
+  
+  forward();
+  delay(500);
+}
+
+//Code for ultra sonic sensor
+void senseFront(){
+  // Clears the trigPin
+  digitalWrite(trigPin, LOW);
+  delayMicroseconds(2);
+
+  // Sets the trigPin on HIGH state for 10 micro seconds
+  digitalWrite(trigPin, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(trigPin, LOW);
+
+  // Reads the echoPin, returns the sound wave travel time in microseconds
+  duration = pulseIn(echoPin, HIGH);
+
+  // Calculating the distance
+  distance= duration*0.034/2;
+  
+  int walFar = 15;
+  
+  if(distance < 4000 && distance > walFar)
+      fUltra = wallFar;
+  else if(distance < walFar && distance > 10)
+      fUltra = wallCloser;
+  else if(distance < 10 && distance > 5)
+      fUltra = wallWarn;
+  else
+      fUltra = wallCritical;
+  Serial.print("Range FRONT ");Serial.println(distance);
+}
+
+//Code for left laser
+int senseLeft(){
+  uint8_t status;
+  int total=0;
+  for(int i =0; i<7;++i) total += vl.readRange();
+ lRange = total/7;
+ 
+  Serial.print("Range LEFT: "); Serial.println(lRange);
+
+}
+
+//code for right laser
+void senseRight(){
+  uint8_t status;
+  int total= 0;
+  for(int i =0; i<7;++i) total += v2.readRange();
+ rRange = total/7;
+  Serial.print("Range RIGHT: "); Serial.println(rRange);
+
+}
+
+void readLasers(){
+  senseLeft();
+  senseRight();
+
+  if(80 > rRange && 42 < rRange)
+  {
+     lsrs = corRight; 
+  }
+  else if(100 > lRange && 42 < lRange)
+  {
+     lsrs = corLeft;
+  }
+  else if(42 >= rRange){
+   lsrs = rCrit; 
+  }
+  else if(42 >= lRange){
+   lsrs = lCrit; 
+  }
+  else if(rRange == 255)
+  {
+    Serial.println(rRange);
+     lsrs = turnRight;
+  } 
+  else if(lRange == 255)
+  {
+    Serial.println(lRange);
+     lsrs = turnLeft; 
+  }
+  else
+  {
+     lsrs = stable;
+  }
+}
+
+void turnAround(){
+  backward();
+  delay(200);
+  readLasers();
+  if(lRange == 255 || (rRange == 255 && lRange == 255)) left();
+  else if(rRange == 255) right();
+  else left();
+  delay(1300);
+  stop();
+}
+  
+  
+//Code to setup Mandark
+void setup() {
+  //Utra Sonic setup
+  Serial.begin(9600);
+  Wire.begin();
+  pinMode(trigPin, OUTPUT); // Sets the trigPin as an Output
+  pinMode(echoPin, INPUT); // Sets the echoPin as an Input
+  
+  digitalWrite(trigPin,LOW);
+  delay(20);
+  pinMode(laser1SHDNPin, OUTPUT);
+  pinMode(laser2SHDNPin, OUTPUT);
+   pinMode(pinI1,OUTPUT);
+  pinMode(pinI2,OUTPUT);
+  pinMode(speedpinA,OUTPUT);
+  pinMode(pinI3,OUTPUT);
+  pinMode(pinI4,OUTPUT);
+  pinMode(speedpinB,OUTPUT);
+
+  digitalWrite(laser1SHDNPin, LOW);
+  digitalWrite(laser2SHDNPin, LOW);
+
+
+  // wait for serial port to open on native usb devices
+  while (!Serial) {
+    delay(1);
+  }
+  Serial.println("LASER 1");
+  delay(100);
+  digitalWrite(laser1SHDNPin, HIGH);
+  delay(50);
+  if(!vl.begin(0x82)){
+    Serial.println("FAILED LASER 1");
+  }
+
+  delay(90);
+
+  digitalWrite(laser2SHDNPin, HIGH);
+   delay(50);
+  if(!v2.begin(0x84)){
+    Serial.println("Laser 2 FAILED");
+  }
+
+
+  delay(90);
+  
+//  //left laser setup
+//  //vl.begin();
+  Serial.println("inside setup");  // Motor setup
+}
+
+
+//Main Mandark loop
+void loop() {
+    
+  //sideLaserThread.check();      //If we have other loops, we have to call these checks in the loops
+  //frontSensorThread.check();
+  readLasers();
+  senseFront();
+  if(isStart){
+    delay(2000);
+    forward();
+    delay(150);
+    isStart = false;
+  }
+  //Checks if we are right on a wall on the right or left
+  if(lsrs == lCrit || lsrs == rCrit){
+    stop();
+    backward();
+    delay(400);
+    if(lsrs == rCrit){
+      left();
+      delay(300);
+    }
+    if(lsrs == lCrit){
+      right();
+      delay(300);
+    }
+  }
+  //if we need to corner off to the right
+  else if(lsrs == corRight && fUltra != wallCritical && fUltra != wallWarn ) {
+      speadR = 0;
+      speadL = 215;
+      //speadL /= 2;
+      forward();
+      delay(30);
+      speadR = 150;
+      speadL = 215;
+      //speadL /= 2;
+      forward();
+      delay(100);
+      Serial.println("Slight power to left motor please");
+  }
+  //if we need to corner of the left
+  else if(lsrs == corLeft && fUltra != wallCritical && fUltra != wallWarn) {
+      speadL = 0;
+      speadR = 200;
+      //speadR /= 2;
+      forward();
+      delay(30);
+      speadL = 150;
+      speadR = 215;
+      forward();
+      delay(100);
+      Serial.println("Slight power to the Right motor please");
+  }
+  //Intersection? Might be working?
+  else if(fUltra == wallFar && lRange == 255 && rRange == 255){
+    //We should only turn at every other intersection?
+    stop();
+    if(numIntersections % 2 == 0){
+      speadL = 215;
+      speadR = 215;
+      forward();
+      numIntersections++;
+    }
+    else{
+      forward();
+     stop();
+     turn('l');
+    }
+    forward();
+    delay(100);
+  }
+  else if(lsrs == turnRight && (fUltra != wallCritical || fUltra != wallWarn)) {
+     forward();
+     delay(100);
+     stop();
+     turn('r');
+     Serial.println("Hey guys we can turn right if we want, what do we do capt?");
+  }
+  else if(lsrs == turnLeft && (fUltra != wallCritical || fUltra != wallWarn)) {
+    forward();
+      delay(100);
+     stop();
+     turn('l');
+     Serial.println("Hey guys we can turn  left if we want, what do we do capt?");
+  }
+  else if(fUltra ==  wallFar) {
+      speadL = 215;
+      speadR = 215;
+      forward();
+      Serial.println("Wall far away  full POWER!"); 
+  }
+  else if(fUltra == wallCloser) {    
+      Serial.println("Guys I think we are approaching a wall"); 
+  }
+  else if(fUltra == wallWarn) {
+      stop();
+      turnAround();
+      Serial.println("Ok guys we need a plan");
+  }
+  else if (fUltra == wallCritical)
+  {
+      stop();
+      turnAround();
+      Serial.println("HIT THE BREAKS");
+  }
+  else {
+      forward();
+      delay(500);
+      Serial.println("Aight, looks like we are going straight"); 
+  }
+    stop();
+    delay(100);
+}
